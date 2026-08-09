@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Screen Answer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- ── SETTINGS MODAL ── -->
+  <div id="settings" class="modal">
+    <div class="modal-content">
+      <h1>AI Provider Setup</h1>
+      <p class="subtitle">Add one or more providers. They will be ranked by latency and used in order (fastest first, fallback on error).</p>
+
+      <div id="provider-list"></div>
+      <button id="add-provider-btn" class="btn-add">+ Add Provider</button>
+
+      <!-- Test & Rank -->
+      <button id="test-btn" class="btn-primary">Test &amp; Rank</button>
+      <div id="test-status" class="hidden"></div>
+
+      <!-- Results -->
+      <div id="results" class="hidden">
+        <h2>Ranking</h2>
+        <ol id="ranking-list"></ol>
+        <button id="save-btn" class="btn-primary" disabled>Save &amp; Start</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── CAMERA ── -->
+  <div id="camera-view" class="state-view hidden">
+    <video id="video" autoplay playsinline></video>
+    <canvas id="canvas" hidden></canvas>
+    <div id="capture-hint">📷 Point camera at question</div>
+    <div id="latency-debug" class="debug hidden"></div>
+    <button id="settings-btn" class="btn-small" title="Settings">⚙️</button>
+  </div>
+
+  <!-- ── PROCESSING ── -->
+  <div id="processing-view" class="state-view hidden">
+    <div id="spinner"></div>
+    <div id="processing-text">Processing...</div>
+  </div>
+
+  <!-- ── ANSWER ── -->
+  <div id="answer-view" class="state-view hidden">
+    <div id="answer-text"></div>
+  </div>
+
+  <!-- ── ERROR ── -->
+  <div id="error-view" class="state-view hidden">
+    <div id="error-text">Something went wrong</div>
+    <div id="error-sub">Resuming camera...</div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
