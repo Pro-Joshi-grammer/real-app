@@ -70,48 +70,40 @@ OUTSIDE the tags — only the tagged text is shown to the user.
 IMAGE_PROMPT = """
 You are a visual question-answering engine.
 
-Read the ENTIRE question and all visible information in the image, then provide
-the FINAL ANSWER.
+Read the ENTIRE question and ALL visible information in the image — including
+layout and visual context such as multi-column arrangements, headers, tables,
+charts, diagrams, formulas and code — then provide the FINAL ANSWER.
 
-Handle all question types, including:
-
-- Multiple choice questions
-- True/False questions
+Support EVERY question type, including:
+- Multiple choice: SHORT and LONG / multi-option questions
+- True/False
 - Fill in the blank
-- Short factual questions
-- Definition questions
-- Numerical/calculation questions
-- Math problems
-- Programming/code questions
-- Code output prediction questions
-- Conceptual/theory questions
-- Questions containing tables
-- Questions containing diagrams
-- Questions containing charts
-- Questions containing formulas
+- Short factual and definition questions
+- Numerical / calculation and math problems
+- Programming and code-output prediction questions
+- Questions containing tables, charts, diagrams, formulas, or multi-column layouts
 
-For MULTIPLE CHOICE questions:
+For MULTIPLE CHOICE questions, the answer is the option LETTER, then ")",
+then the COMPLETE option text copied exactly, for example:
 
-The final answer is the option LETTER followed by the COMPLETE option text.
-
-Example:
 C) Large Language Model
 
-NEVER output only the letter (like just "C").
+NEVER return only the letter (like just "C"). Always include the full option
+text, even for long or wordy options.
 
-For other question types:
+For all other types, return the direct answer with enough detail to be useful
+on its own, keeping code, formulas and multi-line structure intact.
 
-The final answer is the direct answer with enough detail to be useful.
+OUTPUT CONTRACT (STRICT — do not deviate):
+Wrap ONLY the final answer in EXACTLY one pair of tags, and output NOTHING
+else in the response:
 
-OUTPUT CONTRACT:
-Put ONLY the final answer between the tags below. Do all analysis and any
-thinking silently and OUTSIDE the tags — only the tagged text is shown to the user.
+<answer>FINAL ANSWER</answer>
 
-<answer>FINAL_ANSWER_HERE</answer>
-
-- The final answer must be a single concise answer, not an analysis.
+- The response must be exactly that <answer>...</answer> pair with no
+  thinking, analysis, explanation, markdown, or text before or after it.
 - Do not describe the image, people, faces, objects, colors, or layout.
-- Do not use markdown unless required by the answer itself (e.g. a code snippet).
+- If you genuinely cannot answer, still respond with ONLY <answer></answer>.
 """
 
 
@@ -123,18 +115,20 @@ _ANSWER_TAG_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE
 def extract_answer(raw: str) -> str:
     """Pull the final answer out of a raw model response.
 
-    Models are prompted to wrap the answer in <answer>…</answer>. Everything
-    outside the tags (prefix/suffix thinking) is discarded. This lets answers
-    hold arbitrary content (numbers, symbols, formulas, code) with no schema.
+    A valid answer MUST be wrapped in <answer>…</answer>. Everything outside
+    the tags (thinking/reasoning) is discarded, which lets answers hold
+    arbitrary content (numbers, symbols, formulas, code) with no schema.
 
-    Falls back to stripping the full response if no tags are present.
+    Missing or malformed tags return "" so the caller treats it as a provider
+    failure and falls through to the next provider — untagged model reasoning
+    is never shown to the user.
     """
     if not raw:
         return ""
     m = _ANSWER_TAG_RE.search(raw)
     if m:
         return normalize_answer(m.group(1))
-    return normalize_answer(raw)
+    return ""
 
 
 # ── Normalizer ──
@@ -157,8 +151,9 @@ def normalize_answer(raw: str) -> str:
         flags=re.IGNORECASE,
     ).strip()
 
-    # Normalize whitespace.
-    s = re.sub(r"\s+", " ", s)
+    # Collapse runs of spaces/tabs within each line but PRESERVE line breaks
+    # (code, formulas, multi-line structured answers).
+    s = re.sub(r"[ \t]+", " ", s)
 
     return s
 
@@ -246,41 +241,23 @@ async def answer(body: dict):
             }
         ]
 
-    # ── OCR step ──
-
-    ocr_text = ""
-
-    try:
-        raw_bytes = _decode_b64(image_base64)
-        reader = get_ocr()
-        results = await asyncio.to_thread(reader.readtext, raw_bytes)
-        lines = [r[1] for r in results]
-        ocr_text = " ".join(lines).strip()
-    except Exception:
-        ocr_text = ""  # OCR failed; fall through to VLM
-
     last_error = ""
 
     # ── Provider fallback chain ──
-
+    # VLM inference is the PRIMARY path for every image: visual layout/context
+    # matters for long/multi-option MCQs, tables, charts and diagrams. The
+    # OCR → text-model routing is intentionally not used for the MVP. OCR code
+    # (get_ocr) stays available but unused.
     for prov in providers:
         try:
-            if len(ocr_text) > 10:
-                # OCR gave us usable text → use any text model.
-                raw = await call_provider_text(
-                    prov, ocr_text, TEXT_QA_SYSTEM,
-                )
-            else:
-                # OCR too short or empty → use vision model.
-                raw = await call_provider(
-                    prov, image_base64, IMAGE_PROMPT,
-                )
+            raw = await call_provider(prov, image_base64, IMAGE_PROMPT)
 
             answer_text = extract_answer(raw)
 
+            # Missing/malformed <answer> tags → extract_answer returned "".
             if not answer_text:
                 raise ValueError(
-                    "Provider returned an empty answer"
+                    "Provider returned no valid <answer>…</answer>"
                 )
 
             # Bare option letter → try next provider.
