@@ -47,19 +47,22 @@ TEXT_QA_SYSTEM = """
 You are a question-answering engine. The text below was extracted from an image
 of a question displayed on a screen. Answer the question directly.
 
-Return ONLY the final answer. If the question has multiple-choice options visible,
-return the option letter followed by the complete answer text — for example:
+If the question has multiple-choice options visible, the final answer is the
+option letter followed by the complete answer text — for example:
 
 C) Large Language Model
 
-If no options are visible, return the computed or factual answer with enough
-detail to be useful by itself.
+If no options are visible, the final answer is the computed or factual answer
+with enough detail to be useful by itself.
 
-Rules:
-- Do not add explanations, reasoning, or introductory phrases.
-- Do not say "the correct answer is", "the answer is", or similar.
-- Do not use markdown.
-- Return ONLY the final answer.
+OUTPUT CONTRACT:
+Put ONLY the final answer between the tags below. Do all thinking silently and
+OUTSIDE the tags — only the tagged text is shown to the user.
+
+<answer>FINAL_ANSWER_HERE</answer>
+
+- Keep the final answer concise: no explanations, reasoning, or intro phrases.
+- Do not use markdown unless required by the answer itself (e.g. a code snippet).
 """
 
 # ── Visual question-answering prompt ──
@@ -89,38 +92,49 @@ Handle all question types, including:
 
 For MULTIPLE CHOICE questions:
 
-Return the option LETTER followed by the COMPLETE option text.
+The final answer is the option LETTER followed by the COMPLETE option text.
 
 Example:
 C) Large Language Model
 
-NEVER return only:
-A
-B
-C
-D
+NEVER output only the letter (like just "C").
 
 For other question types:
 
-Return the direct final answer with enough detail to be useful.
+The final answer is the direct answer with enough detail to be useful.
 
-Do not provide chain-of-thought or hidden reasoning.
+OUTPUT CONTRACT:
+Put ONLY the final answer between the tags below. Do all analysis and any
+thinking silently and OUTSIDE the tags — only the tagged text is shown to the user.
 
-Rules:
+<answer>FINAL_ANSWER_HERE</answer>
 
-- Analyze the complete image before answering.
-- Read all visible answer choices before selecting an answer.
-- Do not describe the image.
-- Do not describe people, faces, objects, colors, or layout.
-- Do not say "the user wants".
-- Do not say "the image shows".
-- Do not provide an analysis section.
-- Do not provide reasoning steps unless they are required as part of the final answer.
-- Do not use markdown.
-- Do not add introductory text.
-- Do not say "the correct answer is".
-- Return ONLY the final answer.
+- The final answer must be a single concise answer, not an analysis.
+- Do not describe the image, people, faces, objects, colors, or layout.
+- Do not use markdown unless required by the answer itself (e.g. a code snippet).
 """
+
+
+# ── Extractor ──
+
+_ANSWER_TAG_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE)
+
+
+def extract_answer(raw: str) -> str:
+    """Pull the final answer out of a raw model response.
+
+    Models are prompted to wrap the answer in <answer>…</answer>. Everything
+    outside the tags (prefix/suffix thinking) is discarded. This lets answers
+    hold arbitrary content (numbers, symbols, formulas, code) with no schema.
+
+    Falls back to stripping the full response if no tags are present.
+    """
+    if not raw:
+        return ""
+    m = _ANSWER_TAG_RE.search(raw)
+    if m:
+        return normalize_answer(m.group(1))
+    return normalize_answer(raw)
 
 
 # ── Normalizer ──
@@ -262,7 +276,7 @@ async def answer(body: dict):
                     prov, image_base64, IMAGE_PROMPT,
                 )
 
-            answer_text = normalize_answer(raw)
+            answer_text = extract_answer(raw)
 
             if not answer_text:
                 raise ValueError(
