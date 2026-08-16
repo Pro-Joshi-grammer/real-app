@@ -177,17 +177,32 @@ async def _call_gemini_image(config: dict, image_base64: str, prompt: str) -> st
     )
 
 
-def _gemini_sync_image(client, model: str, image_bytes: bytes, prompt: str,
-                       max_tokens: int) -> str:
+def _gemini_sync_image(
+    client,
+    model: str,
+    image_bytes: bytes,
+    prompt: str,
+    max_tokens: int,
+) -> str:
     from google.genai import types as gt
+
+    image_part = gt.Part.from_bytes(
+        data=image_bytes,
+        mime_type="image/jpeg",
+    )
+
     resp = client.models.generate_content(
         model=model,
-        contents=[prompt, image_bytes],
+        contents=[
+            prompt,
+            image_part,
+        ],
         config=gt.GenerateContentConfig(
             max_output_tokens=max_tokens,
         ),
     )
-    return resp.text
+
+    return resp.text or ""
 
 
 # ── Bedrock ──
