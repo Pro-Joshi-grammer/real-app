@@ -1,7 +1,10 @@
 import asyncio
 import base64
+import logging
 import re
 from contextlib import asynccontextmanager
+
+logger = logging.getLogger("uvicorn.error")
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -271,9 +274,16 @@ async def answer(body: dict):
 
         except Exception as e:
             last_error = str(e)
+            logger.error(
+                "provider '%s' (%s) failed: %s",
+                prov.get("label", prov.get("type", "?")),
+                prov.get("type", "?"),
+                e,
+            )
             continue
 
     # Every provider failed.
+    logger.error("all %d provider(s) failed; last: %s", len(providers), last_error)
     raise HTTPException(
         status_code=502,
         detail=f"All providers failed. Last error: {last_error}",
