@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import logging
 import re
 from contextlib import asynccontextmanager
@@ -58,14 +59,15 @@ C) Large Language Model
 If no options are visible, the final answer is the computed or factual answer
 with enough detail to be useful by itself.
 
-OUTPUT CONTRACT:
-Put ONLY the final answer between the tags below. Do all thinking silently and
-OUTSIDE the tags — only the tagged text is shown to the user.
+OUTPUT CONTRACT (STRICT):
+Respond with a single JSON object and NOTHING else:
 
-<answer>FINAL_ANSWER_HERE</answer>
+{"answer": "FINAL ANSWER HERE"}
 
+- Do all thinking silently; only the JSON is returned.
 - Keep the final answer concise: no explanations, reasoning, or intro phrases.
 - Do not use markdown unless required by the answer itself (e.g. a code snippet).
+- If you cannot answer, still respond with {"answer": ""}.
 """
 
 # ── Visual question-answering prompt ──
@@ -97,16 +99,15 @@ text, even for long or wordy options.
 For all other types, return the direct answer with enough detail to be useful
 on its own, keeping code, formulas and multi-line structure intact.
 
-OUTPUT CONTRACT (STRICT — do not deviate):
-Wrap ONLY the final answer in EXACTLY one pair of tags, and output NOTHING
-else in the response:
+OUTPUT FORMAT (STRICT — do not deviate):
+Respond with a single JSON object and NOTHING else:
 
-<answer>FINAL ANSWER</answer>
+{"answer": "FINAL ANSWER HERE"}
 
-- The response must be exactly that <answer>...</answer> pair with no
-  thinking, analysis, explanation, markdown, or text before or after it.
+- No thinking, analysis, explanation, markdown, or text before or after the JSON.
+- Keep code, formulas and multi-line structure intact inside the string.
 - Do not describe the image, people, faces, objects, colors, or layout.
-- If you genuinely cannot answer, still respond with ONLY <answer></answer>.
+- If you genuinely cannot answer, still respond with {"answer": ""}.
 """
 
 
@@ -118,20 +119,35 @@ _ANSWER_TAG_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE
 def extract_answer(raw: str) -> str:
     """Pull the final answer out of a raw model response.
 
-    A valid answer MUST be wrapped in <answer>…</answer>. Everything outside
-    the tags (thinking/reasoning) is discarded, which lets answers hold
-    arbitrary content (numbers, symbols, formulas, code) with no schema.
+    Primary path is structured output: the model returns a JSON object and we
+    read its ``answer`` field. Markdown fences (some json_object providers wrap
+    the JSON) are stripped first. Falls back to the legacy <answer>…</answer>
+    tag contract for endpoints without a response-format hook (e.g. Bedrock).
 
-    Missing or malformed tags return "" so the caller treats it as a provider
-    failure and falls through to the next provider — untagged model reasoning
-    is never shown to the user.
+    Any malformed/empty result returns "" so the caller treats it as a provider
+    failure and falls through — raw model reasoning is never shown to the user.
     """
     if not raw:
         return ""
-    m = _ANSWER_TAG_RE.search(raw)
-    if m:
-        return normalize_answer(m.group(1))
-    return ""
+
+    s = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", raw.strip())
+    s = re.sub(r"\s*```$", "", s)
+
+    try:
+        data = json.loads(s)
+    except ValueError:
+        # Not JSON — legacy <answer>…</answer> contract.
+        m = _ANSWER_TAG_RE.search(raw)
+        if m:
+            return normalize_answer(m.group(1))
+        return ""
+
+    if not isinstance(data, dict):
+        return ""
+    ans = data.get("answer")
+    if not ans:
+        return ""
+    return normalize_answer(str(ans))
 
 
 # ── Normalizer ──
@@ -204,10 +220,8 @@ async def answer(body: dict):
     """
     Answer an image using the supplied provider list.
 
-    Pipeline:
-      1. Run OCR on the image to extract text.
-      2. If OCR yields meaningful text → send to text-only LLM (cheaper, more models).
-      3. If OCR fails → fall back to vision-model path (existing behavior).
+    Pipeline: vision model (VLM) per provider → JSON structured output →
+    fallback chain: first provider whose answer parses wins.
     """
 
     image_base64 = body.get("image_base64", "")
@@ -257,7 +271,7 @@ async def answer(body: dict):
 
             answer_text = extract_answer(raw)
 
-            # Missing/malformed <answer> tags → extract_answer returned "".
+            # Missing/malformed JSON (or <answer> tags) → extract_answer returned "".
             if not answer_text:
                 raise ValueError(
                     "Provider returned no valid <answer>…</answer>"

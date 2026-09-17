@@ -67,7 +67,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ### Routes (`backend/app/main.py`)
 - **`POST /api/answer`** — main flow. Body: `{ image_base64, providers?: [...] }`. Pipeline:
   1. **Vision (VLM) path is primary**: decode base64 image, call `call_provider` + `IMAGE_PROMPT` for every image. (OCR → text-model routing is intentionally unused for the MVP; OCR code `get_ocr` kept but not called.)
-  2. `extract_answer` requires exact `<answer>…</answer>` tags — missing/malformed → `""` (never raw reasoning), treated as a provider failure.
+  2. `extract_answer` parses structured-output JSON (`{"answer": ...}`) — missing/malformed → `""` (never raw reasoning), treated as a provider failure. Legacy `<answer>…</answer>` tags still accepted as a fallback.
   3. Iterate providers as a **fallback chain**: try each, first success wins; empty answers, malformed tags, and bare option letters (`A`/`A)`/`A.`) are treated as failures and move on.
   4. Returns `{ "answer": "<extracted answer>" }`; 502 if all providers fail.
   - If `providers` is absent/empty, builds one provider from env config.
@@ -80,12 +80,12 @@ Every provider config dict carries its own `type`, `api_key`, `base_url`, `model
 - **`gemini`** — uses `google-genai` SDK, sync calls run via `asyncio.to_thread`. Optional import (`google.genai`) guarded.
 - **`bedrock`** — boto3, Claude message format, `asyncio.to_thread`. Optional import (`boto3`) guarded.
 - `test_provider(config)` = wall-clock latency of one tiny request ("Reply with exactly one word: OK", 5 tokens).
-- `call_provider(config, image_base64, prompt)` = image/vision path.
+- `call_provider(config, image_base64, prompt)` = image/vision path. The answer call uses **structured output**: `response_format={"type":"json_schema", ...}` on Fireworks base URLs, `{"type":"json_object"}` elsewhere (retries plain on `BadRequestError`), native `response_schema` on Gemini, prompt-constrained JSON on Bedrock.
 - `call_provider_text(config, text, system_prompt)` = text-only path (post-OCR).
 
 ### Prompts & answer extraction
-- `TEXT_QA_SYSTEM` / `IMAGE_PROMPT`: instruct the model to wrap ONLY the final answer in `<answer>…</answer>` tags; everything outside is discarded (allows arbitrary content — formulas, code — with no schema).
-- `extract_answer(raw)` → regex-pulls `<answer>…</answer>`, else falls back to full response; both pass through `normalize_answer`.
+- `TEXT_QA_SYSTEM` / `IMAGE_PROMPT`: instruct the model to respond with exactly one JSON object `{"answer": "<final answer>"}` and nothing else; no tag contract, no strict formatting prose.
+- `extract_answer(raw)` → parses the JSON object and reads its `answer` field (fences stripped); falls back to regex-pulling `<answer>…</answer>` for legacy/Bedrock responses; all paths pass through `normalize_answer`.
 - `normalize_answer(raw)` → strips markdown fences, leading intro phrases ("the correct answer is", "answer:"), collapses whitespace.
 - **Test:** `python backend/test_extract.py` (assert-based, no framework).
 
@@ -144,6 +144,15 @@ POST /api/providers/test
 
 ## Change Log
 *Append new entries here (newest on top) after making changes; update any affected section above.*
+
+- **Structured outputs replace tag prompting** (backend):
+  - New `ANSWER_SCHEMA` (`{"answer": string}`, `name="screen_answer"`) in `providers.py`; the answer call now requests structured output instead of begging for tags.
+  - `_call_openai_image` sends `response_format`: full `json_schema` on `api.fireworks.ai` base URLs, `json_object` on other OpenAI-compatible endpoints; retries without `response_format` on `BadRequestError` (endpoints that reject it keep working).
+  - Gemini image path uses native `response_schema` + `response_mime_type="application/json"`.
+  - Bedrock unchanged (no JSON-schema mode) — prompt-constrained JSON, parsed by `extract_answer`; `ponytail` comment notes tool-use as the upgrade path.
+  - `IMAGE_PROMPT` / `TEXT_QA_SYSTEM` dropped the `<answer>…</answer>` contract → "respond with exactly `{"answer": "..."}` and nothing else".
+  - `extract_answer` parses the JSON first (fences stripped, non-object/empty `answer` → `""`), keeps the legacy `<answer>` tag regex as fallback.
+  - `test_extract.py` updated (JSON cases added, tag regression retained); passes (`python backend/test_extract.py`), py_compile clean.
 
 - VQA pipeline fix (backend):
   - `/api/answer` now always calls the **vision model** (`call_provider` + `IMAGE_PROMPT`) for every image. OCR → text-model routing removed from the primary path; OCR code (`get_ocr`) kept but unused.

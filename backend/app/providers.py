@@ -23,12 +23,40 @@ try:
 except ImportError:
     pass
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
 
 # ── Test prompt (tiny, fast) ──
 
 TEST_PROMPT = "Reply with exactly one word: OK"
 TEST_MAX_TOKENS = 5
+
+
+# ── Structured output schema (answer as JSON) ──
+
+ANSWER_SCHEMA_NAME = "screen_answer"
+ANSWER_SCHEMA = {
+    "type": "object",
+    "properties": {"answer": {"type": "string"}},
+    "required": ["answer"],
+    "additionalProperties": False,
+}
+
+
+def _structured_response_format(config: dict) -> dict:
+    """Fireworks-style structured output for OpenAI-compatible endpoints.
+
+    Full ``json_schema`` enforcement on Fireworks; plain ``json_object`` on
+    any other OpenAI-compatible base URL (still schema-shaped by the prompt).
+    """
+    if "api.fireworks.ai" in (config.get("base_url") or "").lower():
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": ANSWER_SCHEMA_NAME,
+                "schema": ANSWER_SCHEMA,
+            },
+        }
+    return {"type": "json_object"}
 
 
 async def test_provider(config: dict) -> dict:
@@ -124,19 +152,29 @@ async def _call_openai_image(config: dict, image_base64: str, prompt: str) -> st
     raw = image_base64
     if raw.startswith("data:"):
         raw = raw.split(",", 1)[-1]
-    resp = await client.chat.completions.create(
-        model=config["model"],
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url",
-                 "image_url": {"url": f"data:image/jpeg;base64,{raw}"}},
-            ],
-        }],
-        max_tokens=int(config.get("max_tokens", 512)),
-        timeout=int(config.get("timeout", 30)),
-    )
+
+    def _create(**extra):
+        return client.chat.completions.create(
+            model=config["model"],
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url",
+                     "image_url": {"url": f"data:image/jpeg;base64,{raw}"}},
+                ],
+            }],
+            max_tokens=int(config.get("max_tokens", 512)),
+            timeout=int(config.get("timeout", 30)),
+            **extra,
+        )
+
+    # Structured output is a parse reliability win, not a hard requirement:
+    # endpoints that reject `response_format` fall back to a plain call.
+    try:
+        resp = await _create(response_format=_structured_response_format(config))
+    except BadRequestError:
+        resp = await _create()
     return resp.choices[0].message.content or ""
 
 
@@ -199,6 +237,9 @@ def _gemini_sync_image(
         ],
         config=gt.GenerateContentConfig(
             max_output_tokens=max_tokens,
+            # Gemini-specific structured output (equivalent of Fireworks json_schema)
+            response_mime_type="application/json",
+            response_schema=ANSWER_SCHEMA,
         ),
     )
 
@@ -271,6 +312,9 @@ def _bedrock_sync_image(config: dict, raw_b64: str, prompt: str,
             ],
         }],
     })
+    # ponytail: Claude on Bedrock has no JSON-schema response_format — the
+    # prompt demands a JSON {"answer": ...} object and extract_answer parses it.
+    # Add tool-use constrained output if parse failures ever show up.
     resp = client.invoke_model(modelId=config["model"], body=body)
     resp_body = json.loads(resp["body"].read())
     return resp_body["content"][0]["text"]

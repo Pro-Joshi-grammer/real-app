@@ -4,19 +4,20 @@ sys.path.insert(0, os.path.dirname(__file__))
 from app.main import extract_answer
 
 cases = [
-    # tagged, with CoT prefix/suffix outside the tags
-    ("Okay the user is asking me to analyze this question. "
-     "<answer>C) Large Language Model</answer> "
-     "hope that helps!",
-     "C) Large Language Model"),
-    # tags with arbitrary content (numbers/symbols)
-    ("<ANSWER>sqrt(144) = 12</ANSWER>", "sqrt(144) = 12"),
-    # multiline formatting preserved (code), markdown fences stripped
-    ("<answer>```python\nx = 1\ny = 2\n```</answer>", "x = 1\ny = 2"),
+    # structured-output JSON (schema mode)
+    ('{"answer": "C) Large Language Model"}', "C) Large Language Model"),
+    # JSON wrapped in markdown fences (json_object mode)
+    ('```json\n{"answer": "sqrt(144) = 12"}\n```', "sqrt(144) = 12"),
+    # multiline answer preserved (code / formulas)
+    ('{ "answer": "x = 1\\ny = 2" }', "x = 1\ny = 2"),
+    # JSON without an answer key -> invalid/empty
+    ('{"foo": "bar"}', ""),
+    # non-object JSON -> invalid/empty
+    ('["not", "an", "object"]', ""),
+    # legacy <answer>…</answer> contract still accepted (Bedrock fallback)
+    ("<answer>C) Large Language Model</answer>", "C) Large Language Model"),
     # untagged raw reasoning -> invalid/empty (never shown)
     ("The correct answer is 42.", ""),
-    # malformed tags -> invalid/empty
-    ("<answer>C) Large Language Model", ""),
     # empty
     ("", ""),
 ]
