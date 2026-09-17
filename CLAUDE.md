@@ -112,7 +112,7 @@ npm run dev        # http://localhost:5173
 - Valid providers (all required fields filled) only. First card is non-removable.
 
 ### Capture loop
-- `startCamera()` → `getUserMedia` (rear `facingMode: "environment"`).
+- `startCamera()` → `getUserMedia` (rear `facingMode: "environment"`), then applies the **widest zoom** the track exposes (`track.applyConstraints({ advanced: [{ zoom: min }] })`, only when `zoom.min < 1`, non-fatal if unsupported) so a whole laptop screen fits in frame on phones with an ultra-wide lens.
 - `tryCapture()` every **2s** (`CAPTURE_INTERVAL`, down from 400ms): capture frame → JPEG 0.88, max width 1600 → **dwell/scene-change check** (8×8 downsampled checksum; only proceed if ≥3% change) → `POST /api/answer` → show answer 7s → resume.
 - **Backoff:** after 5 consecutive errors, pause 30s. Otherwise 2.5s between retries.
 
@@ -144,6 +144,10 @@ POST /api/providers/test
 
 ## Change Log
 *Append new entries here (newest on top) after making changes; update any affected section above.*
+
+- Camera FOV + answer overflow (frontend):
+  - `startCamera()` now auto-sets the **widest zoom** on the rear camera after `getUserMedia`: reads `track.getCapabilities().zoom` and applies `{ advanced: [{ zoom: zoom.min }] }` when `zoom.min < 1`. This opens at 0.5x on phones with an ultra-wide lens so the whole laptop screen fits in frame (fixes question/options being cut off at 1x). Wrapped in try/catch + `as any` for TS DOM libs that lack `zoom`; no-op on devices/browsers without zoom control.
+  - `#answer-text` gets `max-height:100%` + `overflow-y:auto` so long AI answers scroll instead of being clipped by the global `overflow:hidden`.
 
 - **Structured outputs replace tag prompting** (backend):
   - New `ANSWER_SCHEMA` (`{"answer": string}`, `name="screen_answer"`) in `providers.py`; the answer call now requests structured output instead of begging for tags.

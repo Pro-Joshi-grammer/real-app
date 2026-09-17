@@ -84,6 +84,19 @@ async function startCamera() {
     audio: false,
   });
 
+  // Open at the widest angle (0.5x on phones with an ultra-wide lens) so the
+  // whole laptop screen fits in frame. Non-fatal if the browser ignores zoom.
+  try {
+    const track = stream.getVideoTracks()[0];
+    // `zoom` isn't in this TS lib's DOM types yet (track.getCapabilities()).
+    const caps = track.getCapabilities?.() as any;
+    if (caps?.zoom?.min != null && caps.zoom.min < 1) {
+      await track.applyConstraints({ advanced: [{ zoom: caps.zoom.min }] } as any);
+    }
+  } catch {
+    /* zoom unsupported → default FOV */
+  }
+
   video.srcObject = stream;
   await video.play();
   // Reset dwell & error state on fresh start
